@@ -16,7 +16,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-// import pdfToText from 'react-pdftotext'
+import pdfToText from 'react-pdftotext'
 
 function DashboardPage() {
   const { data: session, status } = useSession();
@@ -52,11 +52,12 @@ function DashboardPage() {
   async function extractText(file) {
     simulateProcessing();
     // Placeholder for actual PDF extraction logic
-    // pdfToText(file)
-    //     .then(text => {
-    //       setText(text);
-    //     })
-    //     .catch(error => console.error("Failed to extract text from pdf"))
+    pdfToText(file)
+        .then(text => {
+          setText(text);
+          console.log(text);
+        })
+        .catch(error => console.error("Failed to extract text from pdf"))
   }
 
   const handleChange = (event) => {
