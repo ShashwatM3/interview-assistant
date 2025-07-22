@@ -18,6 +18,10 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import pdfToText from 'react-pdftotext'
+import { doc, setDoc } from "firebase/firestore"; 
+import { useCounterStore } from '../store';
+import { db } from '@/firebase';
+import { useRouter } from 'next/navigation';
 
 function DashboardPage() {
   const { data: session, status } = useSession();
@@ -43,6 +47,10 @@ function DashboardPage() {
   const [finalExtracted, setFinalExtracted] = useState({});
   const [numWarmup, setNumWarmup] = useState("");
   const [numCore, setNumCore] = useState("");
+
+  const setInterviewInfo = useCounterStore((state) => state.setInterviewInfo);
+
+  const router = useRouter();
 
   const handleFiles = async (newFiles) => {
     const currentCount = texts.length;
@@ -99,18 +107,17 @@ function DashboardPage() {
     handleFiles(e.target.files);
   };
 
-  // Simulate processing delay
   const simulateProcessing = (cb) => {
     setStage('processing');
     setTimeout(() => {
       setStage('interview_params');
       if (cb) cb();
-    }, 2000); // 1.5s delay
+    }, 2000);
   };
 
   const handleShow = () => {
     simulateProcessing();
-    const result = text.join(". ");
+    const result = texts.join(". ");
     setFinalExtracted({
       jobDescription: result
     });
@@ -118,7 +125,7 @@ function DashboardPage() {
   };
 
   const handleClick = () => {
-    hiddenFileInput.current.click(); // Triggers the hidden input
+    hiddenFileInput.current.click();
   };
 
   async function extractText(file) {
@@ -201,38 +208,86 @@ function DashboardPage() {
 
   async function generateInterview() {
     const prompt = `
-      You are an AI Interviewer Generator tasked with creating a detailed system prompt for an AI voice-based technical interviewer.
+      You are a prompt generator for an AI-powered mock interviewer system.
 
-      Given this job description:
+      The interview is based on the following job description:
 
-      ${finalExtracted}
-      Number of warm-up interview questions: ${numWarmup}
-      Number of core interview questions: ${numCore}
+      ${JSON.stringify(finalExtracted)}
 
-      Generate a system prompt specifying:
+      The interview should include:
+      - ${numWarmup} warm-up questions, comprising a mix of behavioral and light technical questions to ease the candidate in
+      - ${numCore} core deep-dive technical questions, focused on key responsibilities, technical requirements, and critical thinking
+      - 4 smart, contextual follow-up questions derived from the core technical questions to probe deeper or clarify understanding
 
-      1. **Role:** Define the interviewer's professional persona aligned to the company and role.
+      Your task is to output a structured JSON object with the following fields:
 
-      2. **Goal:** Describe the interviewer’s main objectives in evaluating the candidate’s readiness.
+      - "Role": Format is a string. A detailed persona for the interviewer. It should reflect the tone, technical authority, and culture of the company and simulate the level of a senior engineer or hiring manager at the company.
+        
+      - "Goal": Format is a string. The primary objective of the interview — what the company is looking for in a candidate based on the job description. This should include both technical skills and mission or culture alignment.
 
-      3. **Questions:**  
-        - Outline the number of warm up interview questions and focus of warm-up behavioral questions to ask with respect to the number of warm-up behavioral questions specified, based on the job description provided.  
-        - Outline the number of core technical questions and focus areas of core technical interview questions to ask with respect to the number of core interview questions specified, based on the job description provided.
-        - Include instructions to ask follow-up "Why?", "What if?", or "Explain more" questions to dive deeper to evaluate a better fit for the role from the job description.
+      - "Questions": An object with two keys: 
+        - "Warmup": A list of warm-up questions that are aligned with the company’s values and general expectations for a candidate at this level.
+        - "Core": A list of deep technical and reasoning-based questions, specific to the job description, tools, and domains required.
 
-      4. **Rules:**  
-        - Maintain a professional and realistic interview tone.  
-        - Avoid teaching or giving direct answers unless asked by the candidate.  
-        - Ask for verbal explanations, including short pseudocode or system design walkthroughs where relevant.  
-        - Use the STAR method for behavioral questions.  
+      - "Rules": Format is a string. A bunch of rules that the AI interviewer should follow to simulate a realistic and thoughtful interview. This includes tone, pacing, how to handle candidate responses, and how to explain technical terms where necessary.
 
-      Format the system prompt clearly with headings for Role, Goal, Questions, and Rules.  
-      Make it suitable to power a conversational AI voice interviewer that dynamically adapts to the provided job description.
+      Make sure the generated content reflects:
+      - The company’s unique mission, culture, and tone
+      - The technical domains mentioned in the job description
+      - The level and expectations of the role (intern, junior, senior, etc.)
+      - Language appropriate for a real professional technical interview
 
-      Your response should be a system prompt purely and strictly in a JSON Format, with the fields: Role, Goal, Questions, and Rules, and where each field's value is a multi-line string pertaining to the respective content.
-    `
-    const response = await sendToGPT(prompt)
-    console.log(response);
+      Avoid generic or vague questions. The questions should be specific, practical, and tailored to the actual job responsibilities.
+
+      Ensure that:
+      - The JSON output is strictly valid — no comments, no trailing commas, and all keys/strings use double quotes.
+      - Format the JSON to be parsable directly by JavaScript's JSON.parse() method.
+      - Escape any quotes inside strings.
+      - Respond with nothing except the raw JSON object.
+      `
+    console.log(prompt)
+    setStage("processing")
+    const rawOutput = await sendToGPT(prompt)
+    try {
+      const parsedOutput = JSON.parse(rawOutput);
+      console.log("Parsed successfully")
+
+      const now = new Date();
+      const options = {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      };
+  
+      const formatted = now.toLocaleString('en-US', options).replace(',', '');
+      const formattedDoc = now.toLocaleString('en-US', options).replace(',', '').replace(/\s/g, '_');
+      const objData = {
+        preInterview: {
+          dateCreated: formatted,
+          JD: JSON.stringify(finalExtracted),
+          warmup_depth: numWarmup,
+          core_depth: numCore
+        },
+        warm_up: {
+          questions: parsedOutput.Questions.Warmup
+        },
+        core: {
+          questions: parsedOutput.Questions.Core
+        },
+      }
+      await setDoc(doc(db, "users", session.user.email, "interviews", formattedDoc), objData);
+      setInterviewInfo(objData);
+
+      setStage("ready");
+      
+    } catch (err) {
+      console.log("Failed to parse JSON:", err);
+      // console.log("Raw output:", rawOutput);
+      setStage("error");
+    }
   }
 
   return (
@@ -282,7 +337,7 @@ function DashboardPage() {
                 onDragOver={onDragOver}
                 onDragLeave={onDragLeave}
                 className={`border-2 border-dashed rounded-md p-6 text-center transition-all ${
-                  dragging ? 'bg-neutral-70 border-blue-500' : 'border-neutral-700'
+                  dragging ? 'bg-blue-950 border-blue-500' : 'border-neutral-700'
                 }`}
               >
                 <p className="mb-2 font-semibold">Drag & Drop screenshots or click below</p>
@@ -322,7 +377,7 @@ function DashboardPage() {
                 {loading && <p className="mt-4">🔄 Processing image...</p>}
 
                 {!loading && texts.length > 0 && (
-                  <div className="mt-4 space-y-2">
+                  <div className="mt-4 flex items-center justify-center gap-3">
                     {texts.map((_, idx) => (
                       <div key={idx}>
                         ✅ <strong>Image {idx + 1}</strong> uploaded
@@ -494,9 +549,9 @@ function DashboardPage() {
                 <p className='text-neutral-400'>Chosen: {numWarmup=="" ? "None": <span className='text-orange-500 font-bold'>{numWarmup}</span>}</p>
               </div>
               <div className='flex items-center justify-center gap-3'>
+                <h3 onClick={() => {setNumWarmup("4")}} className='p-4 border border-solid rounded-lg cursor-pointer'>4</h3>
+                <h3 onClick={() => {setNumWarmup("6")}} className='p-4 border border-solid rounded-lg cursor-pointer'>6</h3>
                 <h3 onClick={() => {setNumWarmup("8")}} className='p-4 border border-solid rounded-lg cursor-pointer'>8</h3>
-                <h3 onClick={() => {setNumWarmup("10")}} className='p-4 border border-solid rounded-lg cursor-pointer'>10</h3>
-                <h3 onClick={() => {setNumWarmup("12")}} className='p-4 border border-solid rounded-lg cursor-pointer'>12</h3>
               </div>
             </div>
             <div className='flex items-center justify-between gap-10'>
@@ -522,8 +577,16 @@ function DashboardPage() {
         <div className="h-[91vh] fadeInElement w-full flex flex-col items-center justify-center">
           <div className="text-3xl font-bold mb-5">Let's get started</div>
           <div className="text-lg mb-4 text-neutral-500 text-center">We have analyzed your job description and<br/> are ready to interview you.</div>
-          <Button className="w-64 py-4 text-md">Enter Interview Dashboard</Button>
-          <Button variant="ghost" className="mt-4" onClick={() => setStage('input')}>Go Back</Button>
+          <Button onClick={() => {router.push("/Dashboard/Interview")}} className="w-64 py-4 text-md">Enter Interview Dashboard</Button>
+          {/* <Button variant="ghost" className="mt-4" onClick={() => setStage('input')}>Go Back</Button> */}
+        </div>
+      )}
+      {stage=="error" && (
+        <div className="h-[91vh] fadeInElement w-full flex flex-col items-center justify-center">
+          <div className="text-3xl font-bold mb-5">❌ Oops</div>
+          <div className="text-lg mb-4 text-neutral-500 text-center">It seems like we can't generate<br/> the interview. Try again!</div>
+          {/* <Button className="w-64 py-4 text-md">Enter Interview Dashboard</Button> */}
+          <Button variant="ghost" className="mt-4" onClick={() => window.location.reload()}>Go Back</Button>
         </div>
       )}
     </div>
