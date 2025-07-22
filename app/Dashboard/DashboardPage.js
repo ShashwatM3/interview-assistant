@@ -1,12 +1,13 @@
 'use client'
 
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useCallback } from 'react';
 import { useSession, signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import "./styles.css";
 import {Settings} from "lucide-react"
 import {Headset} from "lucide-react"
 import { AuroraText } from "@/components/magicui/aurora-text";
+import Tesseract from 'tesseract.js';
 import { Input } from '@/components/ui/input';
 import {
   Sheet,
@@ -31,18 +32,89 @@ function DashboardPage() {
   const [jobType, setJobType] = useState('Full-time');
   const [location, setLocation] = useState('');
   const [notes, setNotes] = useState('');
-
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
-  const [stage, setStage] = useState('input'); // 'input' | 'processing' | 'ready'
+  const [stage, setStage] = useState('input');
+  // const [stage, setStage] = useState('interview_params');
+  const [texts, setTexts] = useState([]); // Array of extracted texts
+  const [loadingImages, setLoadingImages] = useState(false);
+  const [error, setError] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const [finalExtracted, setFinalExtracted] = useState({});
+  const [numWarmup, setNumWarmup] = useState("");
+  const [numCore, setNumCore] = useState("");
+
+  const handleFiles = async (newFiles) => {
+    const currentCount = texts.length;
+    const filesToProcess = Array.from(newFiles).slice(0, 3 - currentCount);
+
+    if (currentCount >= 3) {
+      setError('Limit of 3 images reached.');
+      return;
+    }
+
+    if (filesToProcess.length === 0) return;
+
+    setError('');
+    setLoading(true);
+
+    const processedTexts = await Promise.all(
+      filesToProcess.map((file) => {
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = async () => {
+            try {
+              const result = await Tesseract.recognize(reader.result, 'eng');
+              resolve(result.data.text);
+            } catch (err) {
+              resolve('[Error processing image]');
+              console.log(err)
+            }
+          };
+          reader.readAsDataURL(file);
+        });
+      })
+    );
+
+    setTexts((prev) => [...prev, ...processedTexts]);
+    setLoading(false);
+  };
+
+  const onDrop = useCallback((e) => {
+    e.preventDefault();
+    setDragging(false);
+    handleFiles(e.dataTransfer.files);
+  }, [texts]);
+
+  const onDragOver = useCallback((e) => {
+    e.preventDefault();
+    setDragging(true);
+  }, []);
+
+  const onDragLeave = useCallback(() => {
+    setDragging(false);
+  }, []);
+
+  const onFileChange = (e) => {
+    handleFiles(e.target.files);
+  };
 
   // Simulate processing delay
   const simulateProcessing = (cb) => {
     setStage('processing');
     setTimeout(() => {
-      setStage('ready');
+      setStage('interview_params');
       if (cb) cb();
-    }, 1500); // 1.5s delay
+    }, 2000); // 1.5s delay
+  };
+
+  const handleShow = () => {
+    simulateProcessing();
+    const result = text.join(". ");
+    setFinalExtracted({
+      jobDescription: result
+    });
+    console.log('🧾 Transcriptions:', texts);
   };
 
   const handleClick = () => {
@@ -51,10 +123,12 @@ function DashboardPage() {
 
   async function extractText(file) {
     simulateProcessing();
-    // Placeholder for actual PDF extraction logic
     pdfToText(file)
         .then(text => {
           setText(text);
+          setFinalExtracted({
+            jobDescription: text
+          });
           console.log(text);
         })
         .catch(error => console.error("Failed to extract text from pdf"))
@@ -62,7 +136,14 @@ function DashboardPage() {
 
   const handleChange = (event) => {
     const fileUploaded = event.target.files[0];
-    console.log("Selected file:", fileUploaded);
+    if (!fileUploaded) return;
+
+    // Check MIME type
+    if (fileUploaded.type !== "application/pdf") {
+      alert("Please upload a PDF file only.");
+      return;
+    }
+
     extractText(fileUploaded);
   };
 
@@ -77,14 +158,6 @@ function DashboardPage() {
       return false;
     }
   }
-  
-  function analyzeURL() {
-    if (!(isValidURL(url))) {
-      alert("Incorrect URL. Please enter tha correct URL");
-      return;
-    }
-    simulateProcessing(); // Placeholder for actual scraping logic
-  }
 
   const analyzeForm = () => {
     // Validate required fields
@@ -92,33 +165,75 @@ function DashboardPage() {
       alert('Please fill out all required fields.');
       return;
     }
+    const formData = {
+      "Job Title" : jobTitle,
+      "Company Name": companyName,
+      "Job Content": jobDescription,
+      "Skills/Technologies": skills,
+      "Experience Level": experienceLevel,
+      "Job Type": jobType,
+      "Location": location,
+      "Additional notes": notes
+    }
+    setFinalExtracted(formData);
     simulateProcessing();
-    // const formData = { ... }
-    // You can call an API here or pass this to a generator function
   };
 
-  // // UI for processing stage
-  // if (stage === 'processing') {
-  //   return (
-  //     <div className="h-[100vh] w-full flex flex-col items-center justify-center">
-  //       <div className="text-2xl font-semibold mb-4">Processing...</div>
-  //       <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-gray-900 mb-4"></div>
-  //       <div className="text-neutral-500">Please wait while we analyze your input.</div>
-  //     </div>
-  //   );
-  // }
+  const sendToGPT = async (inputForGPT) => {
+    const res = await fetch("/api/gpt", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ message: inputForGPT })
+    });
+  
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("GPT API error:", res.status, errText);
+      throw new Error(`API error ${res.status}`);
+    }
+  
+    const data = await res.json();
+    return data.reply;
+  };
+  
 
-  // // UI for ready stage
-  // if (stage === 'ready') {
-  //   return (
-  //     <div className="h-[100vh] w-full flex flex-col items-center justify-center">
-  //       <div className="text-3xl font-bold mb-4 text-green-600">Ready for you!</div>
-  //       <div className="text-lg mb-8">Your job description has been analyzed. You can now generate your interview.</div>
-  //       <Button className="w-64 py-4 text-lg">Generate Interview</Button>
-  //       <Button variant="ghost" className="mt-6" onClick={() => setStage('input')}>Go Back</Button>
-  //     </div>
-  //   );
-  // }
+  async function generateInterview() {
+    const prompt = `
+      You are an AI Interviewer Generator tasked with creating a detailed system prompt for an AI voice-based technical interviewer.
+
+      Given this job description:
+
+      ${finalExtracted}
+      Number of warm-up interview questions: ${numWarmup}
+      Number of core interview questions: ${numCore}
+
+      Generate a system prompt specifying:
+
+      1. **Role:** Define the interviewer's professional persona aligned to the company and role.
+
+      2. **Goal:** Describe the interviewer’s main objectives in evaluating the candidate’s readiness.
+
+      3. **Questions:**  
+        - Outline the number of warm up interview questions and focus of warm-up behavioral questions to ask with respect to the number of warm-up behavioral questions specified, based on the job description provided.  
+        - Outline the number of core technical questions and focus areas of core technical interview questions to ask with respect to the number of core interview questions specified, based on the job description provided.
+        - Include instructions to ask follow-up "Why?", "What if?", or "Explain more" questions to dive deeper to evaluate a better fit for the role from the job description.
+
+      4. **Rules:**  
+        - Maintain a professional and realistic interview tone.  
+        - Avoid teaching or giving direct answers unless asked by the candidate.  
+        - Ask for verbal explanations, including short pseudocode or system design walkthroughs where relevant.  
+        - Use the STAR method for behavioral questions.  
+
+      Format the system prompt clearly with headings for Role, Goal, Questions, and Rules.  
+      Make it suitable to power a conversational AI voice interviewer that dynamically adapts to the provided job description.
+
+      Your response should be a system prompt purely and strictly in a JSON Format, with the fields: Role, Goal, Questions, and Rules, and where each field's value is a multi-line string pertaining to the respective content.
+    `
+    const response = await sendToGPT(prompt)
+    console.log(response);
+  }
 
   return (
     <div className='h-full w-full'>
@@ -138,11 +253,13 @@ function DashboardPage() {
         </div>
       </div>
       {stage=="input" && (
-        <div className='h-[91vh] flex items-center justify-center flex-col gap-3'>
+        <div className='h-[84vh] flex items-center justify-center flex-col gap-3'>
         <h1 className='scroll-m-20 text-center text-5xl font-extrabold tracking-tight text-balance mb-3'>Let's give an <AuroraText>interview</AuroraText> today</h1>
         <h3 className='scroll-m-20 text-xl font-light text-neutral-400 tracking-tight mb-10'>Select one of the below methods to give us your job context</h3>
-        <div className='flex items-center justify-center gap-20 w-[70vw] mb-7'>
-          <div className='h-[25vh] flex-1  flex items-center flex-col'>
+        <div className='flex items-center justify-center gap-10 w-[80vw] mb-7'>
+
+          {/* File Upload JD */}
+          <div className='h-[25vh] flex-1  flex items-center flex-col '>
             <h1 className='scroll-m-20 text-2xl font-semibold tracking-tight mb-3'>File Upload</h1>
             <h3 className='mb-3 scroll-m-20 text-md font-light text-neutral-500 tracking-tight'>Upload a PDF of your job description</h3>
             <Button onClick={handleClick} variant={'secondary'}>Select a file</Button>
@@ -150,15 +267,83 @@ function DashboardPage() {
               type="file"
               ref={hiddenFileInput}
               onChange={handleChange}
+              accept="application/pdf"
               style={{ display: 'none' }}
             />
           </div>
+          
+          {/* Images Upload JD */}
           <div className='h-[25vh] flex-1  flex items-center flex-col'>
-            <h1 className='scroll-m-20 text-2xl font-semibold tracking-tight mb-3'>Website URL Upload</h1>
-            <h3 className='mb-3 scroll-m-20 text-md font-light text-neutral-500 tracking-tight text-center'>Upload a link of the website that contains all information regarding the job</h3>
-            <Input className='mb-5' onChange={(e) => {setUrl(e.target.value)}} value={url}/>
-            <Button onClick={analyzeURL} variant={'secondary'}>Analyze Website</Button>
-          </div>
+            <h1 className='scroll-m-20 text-2xl font-semibold tracking-tight mb-3'>Images Upload</h1>
+            <h3 className='mb-3 scroll-m-20 text-md font-light text-neutral-500 tracking-tight text-center'>Upload upto 3 screenshots of your job application description</h3>
+            <div className="p-4 max-w-xl mx-auto">
+              <div
+                onDrop={onDrop}
+                onDragOver={onDragOver}
+                onDragLeave={onDragLeave}
+                className={`border-2 border-dashed rounded-md p-6 text-center transition-all ${
+                  dragging ? 'bg-neutral-70 border-blue-500' : 'border-neutral-700'
+                }`}
+              >
+                <p className="mb-2 font-semibold">Drag & Drop screenshots or click below</p>
+                <p className="text-sm text-gray-500 mb-4">Limit: 3 images max</p>
+                <div className="flex items-center justify-center w-full">
+                <label
+                  htmlFor="file-upload"
+                  className="cursor-pointer flex items-center gap-2 px-4 py-2 bg-neutral-900 border border-solid text-white rounded-lg shadow-md text-sm hover:bg-neutral-800 transition duration-200"
+                >
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M12 12v8m0 0L8 16m4 4l4-4m-4-4V4m0 0l-4 4m4-4l4 4"
+                    />
+                  </svg>
+                  Upload Image
+                </label>
+                  <input
+                    id="file-upload"
+                    type="file"
+                    accept="image/*"
+                    onChange={onFileChange}
+                    className="hidden"
+                  />
+                </div>
+              </div>
+
+              <div>
+                {error && <p className="text-red-500 mt-4">{error}</p>}
+                {loading && <p className="mt-4">🔄 Processing image...</p>}
+
+                {!loading && texts.length > 0 && (
+                  <div className="mt-4 space-y-2">
+                    {texts.map((_, idx) => (
+                      <div key={idx}>
+                        ✅ <strong>Image {idx + 1}</strong> uploaded
+                      </div>
+                    ))}
+                  </div>
+                )}
+              <br/>
+              <center>
+                <Button
+                  disabled={texts.length === 0}
+                  onClick={handleShow}
+                >
+                  Create Interview
+                </Button>
+              </center>
+              </div>
+            </div>
+          <br/></div>
+
+          {/* Manual Input JD */}
           <div className='h-[25vh] flex-1  flex items-center flex-col'>
             <h1 className='scroll-m-20 text-2xl font-semibold tracking-tight mb-3'>Manual Input</h1>
             <h3 className='mb-3 scroll-m-20 text-md font-light text-neutral-500 tracking-tight text-center'>Enter your job description manually via a structured input form</h3>
@@ -287,14 +472,8 @@ function DashboardPage() {
               </SheetContent>
             </Sheet>
           </div>
+
         </div>
-        {/* {uploadMethod!="" ? (
-          <Button variant={''} className='py-5 px-6 cursor-pointer'>Generate Interview</Button>
-        ):(
-          <Button disabled variant={''} className='py-4 cursor-pointer'>Generate Interview</Button>
-        )} */}
-        <Button>Learn how it works</Button>
-        {/* <Button className='dark' variant={''}>How this works</Button> */}
       </div>
       )}
       {stage=="processing" && (
@@ -304,11 +483,46 @@ function DashboardPage() {
           <div className="text-neutral-500">Please wait while we analyze your input.</div>
         </div>
       )}
+      {stage=="interview_params" && (
+        <div className="h-[91vh] fadeInElement w-full flex flex-col items-center justify-center">
+          <h1 className='scroll-m-20 text-center text-4xl font-extrabold tracking-tight text-balance mb-4'>Just one more step</h1>
+          <h3 className='scroll-m-20 text-2xl font-normal text-neutral-500 tracking-tight mb-7'>Choose your Interview Parameters</h3>
+          <div className='px-10 py-8 border border-solid rounded-md mb-4 flex justify-center flex-col'>
+            <div className='flex items-center justify-between gap-10 mb-8'>
+              <div>
+                <h4 className='scroll-m-20 text-xl font-semibold tracking-tight'>Number of Qs for <span className='text-yellow-500'>warm-up</span> interview</h4>
+                <p className='text-neutral-400'>Chosen: {numWarmup=="" ? "None": <span className='text-orange-500 font-bold'>{numWarmup}</span>}</p>
+              </div>
+              <div className='flex items-center justify-center gap-3'>
+                <h3 onClick={() => {setNumWarmup("8")}} className='p-4 border border-solid rounded-lg cursor-pointer'>8</h3>
+                <h3 onClick={() => {setNumWarmup("10")}} className='p-4 border border-solid rounded-lg cursor-pointer'>10</h3>
+                <h3 onClick={() => {setNumWarmup("12")}} className='p-4 border border-solid rounded-lg cursor-pointer'>12</h3>
+              </div>
+            </div>
+            <div className='flex items-center justify-between gap-10'>
+              <div>
+                <h4 className='scroll-m-20 text-xl font-semibold tracking-tight'>Number of Qs for <span className='text-green-500'>core</span> interview</h4>
+                <p className='text-neutral-400'>Chosen: {numCore=="" ? "None": <span className='text-teal-500 font-bold'>{numCore}</span>}</p>
+              </div>
+              <div className='flex items-center justify-center gap-3'>
+                <h3 onClick={() => {setNumCore("8")}} className='p-4 border border-solid rounded-lg cursor-pointer'>8</h3>
+                <h3 onClick={() => {setNumCore("10")}} className='p-4 border border-solid rounded-lg cursor-pointer'>10</h3>
+                <h3 onClick={() => {setNumCore("12")}} className='p-4 border border-solid rounded-lg cursor-pointer'>12</h3>
+              </div>
+            </div>
+          </div>
+          {(numCore!="" && numWarmup!="") ? (
+            <Button onClick={generateInterview}>Generate Interview</Button>
+          ):(
+            <Button disabled>Generate Interview</Button>
+          )}
+        </div>
+      )}
       {stage=="ready" && (
         <div className="h-[91vh] fadeInElement w-full flex flex-col items-center justify-center">
           <div className="text-3xl font-bold mb-5">Let's get started</div>
           <div className="text-lg mb-4 text-neutral-500 text-center">We have analyzed your job description and<br/> are ready to interview you.</div>
-          <Button className="w-64 py-4 text-md">Generate Interview</Button>
+          <Button className="w-64 py-4 text-md">Enter Interview Dashboard</Button>
           <Button variant="ghost" className="mt-4" onClick={() => setStage('input')}>Go Back</Button>
         </div>
       )}
