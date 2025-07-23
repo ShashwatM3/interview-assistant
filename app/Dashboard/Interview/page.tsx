@@ -3,7 +3,7 @@ import InterviewPage from "./InterviewPage";
 
 function page() {
   return (
-    <div>
+    <div className='h-[100vh]'>
       <InterviewPage/>
     </div>
   )

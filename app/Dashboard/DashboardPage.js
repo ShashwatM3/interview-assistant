@@ -317,7 +317,8 @@ function DashboardPage() {
           <div className='h-[25vh] flex-1  flex items-center flex-col '>
             <h1 className='scroll-m-20 text-2xl font-semibold tracking-tight mb-3'>File Upload</h1>
             <h3 className='mb-3 scroll-m-20 text-md font-light text-neutral-500 tracking-tight'>Upload a PDF of your job description</h3>
-            <Button onClick={handleClick} variant={'secondary'}>Select a file</Button>
+            <Button onClick={() => {router.push("/Dashboard/Interview")}} variant={'secondary'}>Select a file</Button>
+            {/* <Button onClick={handleClick} variant={'secondary'}>Select a file</Button> */}
             <input
               type="file"
               ref={hiddenFileInput}
